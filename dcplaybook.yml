@@ -1,0 +1,118 @@
+---
+- name: Automated Security Hardening
+  hosts: localhost
+  become: yes
+  vars:
+    ufw_installed: "ufw"  # Name of the firewall package
+    nginx_conf_path: "/etc/nginx"
+    nginx_log_path: "/var/log/nginx"
+    nginx_forbidden_dir: "/var/www/html/forbidden"
+    apparmor_profile_path: "/etc/apparmor.d"
+    sshd_config_path: "/etc/ssh/sshd_config"
+    oval_content_url: "https://security-metadata.canonical.com/oval/com.ubuntu.{{ ansible_distribution_release }}.usn.oval.xml.bz2"
+    report_directory: "{{ ansible_env.HOME }}"
+  tasks:
+    # Task 1: Configure firewall rules using ufw
+    - name: Ensure ufw package is installed
+      apt:
+        name: "{{ ufw_installed }}"
+        state: present
+
+    - name: Allow SSH through firewall
+      command: ufw allow ssh
+
+    - name: Allow HTTP through firewall
+      command: ufw allow http
+
+    - name: Allow HTTPS through firewall
+      command: ufw allow https
+
+    - name: Enable firewall
+      command: ufw --force enable
+
+    - name: Install SELinux packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - policycoreutils
+        - selinux-basics
+        - selinux-utils
+
+    - name: Enable SELinux
+      command: selinux-activate
+
+    - name: Verify SELinux Status
+      shell: getenforce
+      register: selinux_status
+
+    - name: Display SELinux Status
+      debug:
+        var: selinux_status.stdout
+
+    - name: Modify SELinux Configuration
+      replace:
+        path: /etc/selinux/config
+        regexp: 'SELINUX=permissive'
+        replace: 'SELINUX=enforcing'
+
+# Task 3: Enforce secure configuration settings
+- name: Configuration Management
+  hosts: localhost
+  become: yes
+  tasks:
+    - name: Set secure SSH configuration
+      lineinfile:
+        path: "/etc/ssh/sshd_config"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - { regexp: '^PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^X11Forwarding', line: 'X11Forwarding no' }
+
+    - name: restart sshd
+      shell: |
+        service ssh restart
+
+# Task 4: Apply CIS benchmarks
+- name: Continuous Compliance Monitoring
+  hosts: localhost
+  become: yes
+  tasks:
+    - name: Install necessary packages for OpenSCAP
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - libopenscap25t64
+        - bzip2
+        - cmake
+        - make
+        - ninja-build
+        - openscap-utils
+
+    - name: Download OVAL Content
+      command: "wget https://security-metadata.canonical.com/oval/com.ubuntu.{{ ansible_distribution_release }}.usn.oval.xml.bz2"
+      args:
+        chdir: "/ansible/"
+      register: download_result
+      changed_when: download_result.stdout.find('saved') != -1
+
+    - name: Unzip OVAL Content
+      command: "bunzip2 -f com.ubuntu.{{ ansible_distribution_release }}.usn.oval.xml.bz2"
+      args:
+        chdir: "/ansible/"
+      register: unzip_result
+      changed_when: unzip_result.stdout.find('done') != -1
+
+    - name: Run Vulnerability Scan
+      command: "oscap oval eval --report report.html com.ubuntu.{{ ansible_distribution_release }}.usn.oval.xml"
+      args:
+        chdir: "/ansible/"
+      register: scan_result
+
+    - name: Display Scan Report
+      debug:
+        msg: "Vulnerability Scan Report: file:///ansible//report.html"
+      when: scan_result.rc == 0
